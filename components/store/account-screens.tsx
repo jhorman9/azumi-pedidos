@@ -1,0 +1,16 @@
+"use client";
+import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useAzumi } from "@/components/azumi-provider";
+import { Button, EmptyState, Field, Icon, Notice, PageHeading } from "@/components/ui";
+
+export function AccountScreen() {
+  const { personal, updatePersonal, notify } = useAzumi(), [profile, setProfile] = useState(personal.profile);
+  return <><PageHeading title={personal.profile.name ? `Hola, ${personal.profile.name}` : "Mi cuenta"} eyebrow="Tu espacio Azumi" /><Notice>Tus preferencias se guardan en este dispositivo. Puedes comprar como invitado.</Notice><form className="card" onSubmit={e => { e.preventDefault(); updatePersonal({ profile }); notify("Perfil guardado"); }}><Field label="Nombre" maxLength={80} autoComplete="given-name" value={profile.name || ""} onChange={e => setProfile(p => ({ ...p, name: e.target.value }))} /><Field label="Teléfono" type="tel" maxLength={30} autoComplete="tel" value={profile.phone || ""} onChange={e => setProfile(p => ({ ...p, phone: e.target.value }))} /><Field label="Correo" type="email" maxLength={150} autoComplete="email" value={profile.email || ""} onChange={e => setProfile(p => ({ ...p, email: e.target.value }))} /><Button type="submit">Guardar perfil</Button></form>{([['/pedidos','Mis pedidos','order'],['/direcciones','Mis direcciones','pin'],['/favoritos','Mis favoritos','heart']] as const).map(([href,title,icon]) => <Link className="card flex" key={href} href={href}>{title}<Icon name={icon} /></Link>)}</>;
+}
+export function AddressesScreen() {
+  const { personal, updatePersonal, notify } = useAzumi(), [label, setLabel] = useState("Casa"), router = useRouter();
+  return <><PageHeading title="Mis direcciones" back="/cuenta" />{!personal.addresses.length && <p className="muted">Guarda tus lugares favoritos para pedir más rápido.</p>}{personal.addresses.map(a => <article className="card" key={a.id}><div className="flex"><h3>{a.label}</h3><button className="link-button" onClick={() => updatePersonal(p => ({ ...p, addresses: p.addresses.filter(value => value.id !== a.id) }))}>Eliminar</button></div><p>{a.address}</p><Button className="secondary" onClick={() => { updatePersonal({ deliveryPoint: a.point, deliveryAddress: a.address, fulfillment: "delivery" }); router.push("/ubicacion"); }}>Entregar aquí</Button></article>)}<form className="card" onSubmit={e => { e.preventDefault(); if (!personal.deliveryPoint || !personal.deliveryAddress) return; updatePersonal(p => ({ ...p, addresses: [...p.addresses, { id: crypto.randomUUID(), label: label.trim(), point: personal.deliveryPoint!, address: personal.deliveryAddress }] })); notify("Dirección guardada"); }}><Field label="Nombre de la dirección" required maxLength={80} value={label} onChange={e => setLabel(e.target.value)} /><p className="muted">{personal.deliveryAddress || "Primero selecciona una ubicación y escribe la dirección."}</p><Button type="submit" disabled={!personal.deliveryPoint || !personal.deliveryAddress}>Guardar ubicación actual</Button></form><Link className="button ghost" href="/ubicacion">Agregar otra ubicación</Link></>;
+}
+export function MissingOrder() { return <EmptyState title="Pedido no encontrado" href="/pedidos" label="Ver mis pedidos">Consulta los pedidos realizados desde este navegador.</EmptyState>; }

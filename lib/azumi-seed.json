@@ -1,0 +1,287 @@
+{
+  "products": [
+    {
+      "id": "arroz",
+      "name": "Arroz Frito Combinación",
+      "category": "China",
+      "price": 12.99,
+      "image": "arroz",
+      "description": "Arroz frito al estilo Azumi con pollo, carne, camarón, huevo y cebollino.",
+      "active": true,
+      "featured": true,
+      "options": "Pollo:0,Carne:0,Camarón:2,Combinación:0",
+      "extras": "Lumpia:1.5,Pan:1,Proteína extra:2.5"
+    },
+    {
+      "id": "nigiri",
+      "name": "Nigiri de Salmón",
+      "category": "Sushi",
+      "price": 9.5,
+      "image": "nigiri",
+      "description": "6 piezas de salmón fresco sobre arroz de sushi. Un clásico que siempre sorprende.",
+      "active": true,
+      "featured": true,
+      "options": "6 piezas:0,12 piezas:9.5",
+      "extras": "Salsa extra:0.5"
+    },
+    {
+      "id": "ceviche",
+      "name": "Ceviche Mixto",
+      "category": "Peruana",
+      "price": 12,
+      "image": "ceviche",
+      "description": "Pescado y mariscos en leche de tigre, ají amarillo, camote y choclo.",
+      "active": true,
+      "featured": true,
+      "options": "Tradicional:0,Picante:0",
+      "extras": "Bebida:2"
+    },
+    {
+      "id": "padthai",
+      "name": "Pad Thai de Camarón",
+      "category": "Tailandesa",
+      "price": 10.75,
+      "image": "padthai",
+      "description": "Fideos de arroz salteados, tamarindo, maní, brotes frescos y limón.",
+      "active": true,
+      "featured": true,
+      "options": "Camarón:0,Pollo:0",
+      "extras": "Proteína extra:2.5"
+    },
+    {
+      "id": "sushi",
+      "name": "Sushi Platter · 20 pzs",
+      "category": "Sushi",
+      "price": 24,
+      "originalPrice": 32,
+      "image": "sushi",
+      "description": "Selección del chef: rolls de salmón, nigiris y rolls flameados.",
+      "active": true,
+      "featured": true,
+      "options": "Selección del chef:0",
+      "extras": "Salsa extra:0.5"
+    },
+    {
+      "id": "pasta",
+      "name": "Spaghetti Aglio Olio",
+      "category": "Italiana",
+      "price": 13.25,
+      "image": "pasta",
+      "description": "Camarones, ajo dorado, chile seco y perejil. Fusión en cada bocado.",
+      "active": true,
+      "featured": false,
+      "options": "Camarón:0",
+      "extras": "Pan:1"
+    },
+    {
+      "id": "te",
+      "name": "Té frío de la casa",
+      "category": "Bebidas",
+      "price": 2.5,
+      "image": "",
+      "description": "Refrescante té frío preparado en casa. El complemento perfecto.",
+      "active": true,
+      "featured": false,
+      "options": "Regular:0,Sin azúcar:0",
+      "extras": ""
+    }
+  ],
+  "categories": [
+    {
+      "id": "cat0",
+      "name": "Promociones",
+      "active": true,
+      "order": 0
+    },
+    {
+      "id": "cat1",
+      "name": "Sushi",
+      "active": true,
+      "order": 1
+    },
+    {
+      "id": "cat2",
+      "name": "China",
+      "active": true,
+      "order": 2
+    },
+    {
+      "id": "cat3",
+      "name": "Peruana",
+      "active": true,
+      "order": 3
+    },
+    {
+      "id": "cat4",
+      "name": "Tailandesa",
+      "active": true,
+      "order": 4
+    },
+    {
+      "id": "cat5",
+      "name": "Italiana",
+      "active": true,
+      "order": 5
+    },
+    {
+      "id": "cat6",
+      "name": "Especialidades",
+      "active": true,
+      "order": 6
+    },
+    {
+      "id": "cat7",
+      "name": "Bebidas",
+      "active": true,
+      "order": 7
+    }
+  ],
+  "zones": [
+    {
+      "id": "sf",
+      "name": "San Francisco",
+      "type": "allowed",
+      "fee": 2,
+      "min": 10,
+      "minutesMin": 25,
+      "minutesMax": 35,
+      "active": true,
+      "priority": 1,
+      "points": [
+        [
+          190,
+          45
+        ],
+        [
+          390,
+          55
+        ],
+        [
+          425,
+          245
+        ],
+        [
+          210,
+          270
+        ]
+      ]
+    },
+    {
+      "id": "ob",
+      "name": "Obarrio",
+      "type": "allowed",
+      "fee": 3,
+      "min": 15,
+      "minutesMin": 30,
+      "minutesMax": 45,
+      "active": true,
+      "priority": 2,
+      "points": [
+        [
+          35,
+          80
+        ],
+        [
+          190,
+          45
+        ],
+        [
+          210,
+          270
+        ],
+        [
+          40,
+          255
+        ]
+      ]
+    },
+    {
+      "id": "ce",
+      "name": "Costa del Este",
+      "type": "allowed",
+      "fee": 5,
+      "min": 20,
+      "minutesMin": 35,
+      "minutesMax": 50,
+      "active": true,
+      "priority": 3,
+      "points": [
+        [
+          420,
+          60
+        ],
+        [
+          585,
+          40
+        ],
+        [
+          590,
+          250
+        ],
+        [
+          425,
+          245
+        ]
+      ]
+    },
+    {
+      "id": "restricted",
+      "name": "Área restringida",
+      "type": "restricted",
+      "fee": 0,
+      "min": 0,
+      "minutesMin": 0,
+      "minutesMax": 0,
+      "active": true,
+      "priority": 99,
+      "points": [
+        [
+          295,
+          115
+        ],
+        [
+          350,
+          115
+        ],
+        [
+          350,
+          170
+        ],
+        [
+          295,
+          170
+        ]
+      ]
+    }
+  ],
+  "promotions": [
+    {
+      "id": "promo1",
+      "name": "20% en rolls seleccionados",
+      "description": "Tus favoritos, con un precio especial.",
+      "image": "sushi",
+      "price": 24,
+      "product": "sushi",
+      "start": "2026-01-01",
+      "end": "2027-12-31",
+      "days": "0,1,2,3,4,5,6",
+      "from": "00:00",
+      "to": "23:59",
+      "active": true
+    }
+  ],
+  "coupons": [
+    {
+      "id": "c1",
+      "code": "AZUMI10",
+      "percent": 10,
+      "min": 25,
+      "active": true
+    }
+  ],
+  "settings": {
+    "deliveryOpen": true,
+    "restaurantOpen": true,
+    "whatsapp": false
+  }
+}
