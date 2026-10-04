@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {
   const jar = await cookies();
-  const initialSnapshot = snapshot(jar.get("azumi_visitor")?.value, jar.get("azumi_admin")?.value);
+  const initialSnapshot = await snapshot(jar.get("azumi_visitor")?.value, jar.get("azumi_admin")?.value);
   return (
     <html lang="es">
       <body><AzumiProvider initialSnapshot={initialSnapshot}>{children}</AzumiProvider></body>
