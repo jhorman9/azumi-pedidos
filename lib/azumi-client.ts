@@ -1,16 +1,22 @@
 import type { Catalog, Choice, Customer, Item, Point, Product, Status, Order } from "./azumi-types";
+import { geographicPoint } from "./delivery-geo";
+import { promotionPrice } from "./promotions";
+export { promoActive } from "./promotions";
 
 export type CartItem = Item & { unavailable?: boolean };
 export type Address = { id: string; label: string; address: string; point: Point };
-export type Personal = { cart: CartItem[]; favorites: string[]; addresses: Address[]; profile: Partial<Customer>; coupon: string; deliveryPoint: Point | null; deliveryAddress: string; fulfillment: "pickup" | "delivery" };
+export type Personal = { cart: CartItem[]; favorites: string[]; addresses: Address[]; profile: Partial<Customer>; coupon: string; deliveryPoint: Point | null; deliveryPointSystem: "wgs84"; deliveryAddress: string; fulfillment: "pickup" | "delivery" };
 export type Snapshot = Catalog & { revision: number; orders: Order[]; adminOrders?: Order[]; admin: boolean; development: boolean; serverTime: string };
-export const emptyPersonal: Personal = { cart: [], favorites: [], addresses: [], profile: {}, coupon: "", deliveryPoint: null, deliveryAddress: "", fulfillment: "delivery" };
+export const emptyPersonal: Personal = { cart: [], favorites: [], addresses: [], profile: {}, coupon: "", deliveryPoint: null, deliveryPointSystem: "wgs84", deliveryAddress: "", fulfillment: "delivery" };
 export const emptyCatalog: Catalog = { products: [], categories: [], zones: [], promotions: [], coupons: [], settings: { restaurantOpen: false, deliveryOpen: false, whatsapp: false } };
 export const money = (n: number) => new Intl.NumberFormat("es-PA", { style: "currency", currency: "USD" }).format(n);
 export const dayKey = (date: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Panama", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 export const dateLabel = (value: string) => new Intl.DateTimeFormat("es-PA", { timeZone: "America/Panama", dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 export const options = (value: string): Choice[] => value.split(",").filter(Boolean).map(entry => { const [name, cost] = entry.split(":"); return { name: name.trim(), cost: Number(cost) || 0 }; });
-export const availableProducts = (catalog: Catalog) => catalog.products.filter(p => p.active && catalog.categories.some(c => c.active && c.name === p.category));
+export const availableProducts = (catalog: Catalog) => catalog.products.filter(p => p.active && catalog.categories.some(c => c.active && c.name === p.category)).map(p => {
+  const price = promotionPrice(p, catalog);
+  return price < p.price ? { ...p, originalPrice: p.price, price } : p;
+});
 export const subtotal = (items: Item[]) => items.reduce((sum, i) => sum + Math.round(i.unit * 100) * i.qty, 0) / 100;
 export function pointInPolygon(point: Point, vertices: Point[]) {
   let inside = false;
@@ -32,7 +38,7 @@ export function coverage(catalog: Catalog, items: Item[], point: Point | null) {
 }
 export function cartTotals(catalog: Catalog, personal: Personal, items = personal.cart) {
   const sub = subtotal(items), coupon = catalog.coupons.find(c => c.active && c.code === personal.coupon && sub >= c.min);
-  const discount = coupon ? Math.round(sub * coupon.percent) / 100 : 0;
+  const discount = coupon ? Math.round(Math.round(sub * 100) * coupon.percent / 100) / 100 : 0;
   const cov = coverage(catalog, items, personal.deliveryPoint);
   const delivery = personal.fulfillment === "delivery" && cov.ok ? cov.zone!.fee : 0;
   return { subtotal: sub, discount, delivery, total: Math.round((sub - discount + delivery) * 100) / 100 };
@@ -49,11 +55,6 @@ export function reconcileCart(items: CartItem[], catalog: Catalog): CartItem[] {
     return createItem(p, item.variant, item.extras.map(e => e.name), item.qty, item.notes);
   });
 }
-export function promoActive(p: Catalog["promotions"][number], now = new Date()) {
-  const date = dayKey(now), time = new Intl.DateTimeFormat("en-GB", { timeZone: "America/Panama", hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
-  const day = new Date(date + "T12:00:00Z").getUTCDay();
-  return p.active && date >= p.start && date <= p.end && p.days.split(",").includes(String(day)) && (p.from <= p.to ? time >= p.from && time <= p.to : time >= p.from || time <= p.to);
-}
 export function statusOptions(order: Order): Status[] {
   const values: Record<Status, Status[]> = { Recibido: ["Recibido", "Confirmado", "Cancelado"], Confirmado: ["Confirmado", order.fulfillment === "delivery" ? "En camino" : "Entregado", "Cancelado"], "En camino": ["En camino", "Entregado", "Cancelado"], Entregado: ["Entregado"], Cancelado: ["Cancelado"] };
   return values[order.status];
@@ -69,7 +70,9 @@ export function readPersonal(): Personal {
     result.profile = raw.profile && typeof raw.profile === "object" ? raw.profile : {};
     result.coupon = typeof raw.coupon === "string" ? raw.coupon : "";
     result.deliveryAddress = typeof raw.deliveryAddress === "string" ? raw.deliveryAddress : "";
-    result.deliveryPoint = Array.isArray(raw.deliveryPoint) && raw.deliveryPoint.length === 2 && raw.deliveryPoint.every(Number.isFinite) ? raw.deliveryPoint : null;
+    result.deliveryPoint = Array.isArray(raw.deliveryPoint) && raw.deliveryPoint.length === 2 && raw.deliveryPoint.every(Number.isFinite) ? geographicPoint(raw.deliveryPoint, raw.deliveryPointSystem !== "wgs84") : null;
+    result.deliveryPointSystem = "wgs84";
+    if (raw.deliveryPointSystem !== "wgs84") result.addresses = result.addresses.map(address => ({ ...address, point: geographicPoint(address.point) }));
     result.fulfillment = raw.fulfillment === "pickup" ? "pickup" : "delivery";
     return result;
   } catch { return structuredClone(emptyPersonal); }

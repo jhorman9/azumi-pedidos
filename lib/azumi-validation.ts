@@ -1,4 +1,6 @@
 import type { Catalog, Choice, Customer, Item, Order, Point, Totals, Zone } from "./azumi-types";
+import { geographicPoint } from "./delivery-geo";
+import { promotionPrice } from "./promotions";
 
 export class AppError extends Error {
   status: number;
@@ -36,9 +38,12 @@ export function choices(value: unknown): Choice[] {
   if (result.length > 30 || new Set(result.map(c => c.name)).size !== result.length) throw new AppError("Opciones repetidas o demasiadas opciones.");
   return result;
 }
-export function point(value: unknown): Point {
+export function point(value: unknown, legacy = true): Point {
   if (!Array.isArray(value) || value.length !== 2) throw new AppError("Ubicación inválida.");
-  return [number(value[0], "Coordenada", 600), number(value[1], "Coordenada", 340)];
+  if (!value.every(v => typeof v === "number" && Number.isFinite(v))) throw new AppError("Ubicación inválida.");
+  const result = geographicPoint(value as Point, legacy);
+  if (Math.abs(result[0]) > 180 || Math.abs(result[1]) > 90) throw new AppError("Ubicación inválida.");
+  return result;
 }
 export function pointInPolygon(p: Point, vertices: Point[]): boolean {
   let inside = false;
@@ -48,12 +53,12 @@ export function pointInPolygon(p: Point, vertices: Point[]): boolean {
   }
   return inside;
 }
-function polygon(value: unknown): Point[] {
+function polygon(value: unknown, legacy = true): Point[] {
   if (!Array.isArray(value) || value.length < 3 || value.length > 100) throw new AppError("La zona necesita entre 3 y 100 vértices.");
-  const pts = value.map(point);
+  const pts = value.map(value => point(value, legacy));
   if (new Set(pts.map(p => p.join(","))).size !== pts.length) throw new AppError("El polígono tiene vértices repetidos.");
   const area = Math.abs(pts.reduce((sum, p, i) => { const q = pts[(i + 1) % pts.length]; return sum + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2;
-  if (area < 50) throw new AppError("El polígono es demasiado pequeño.");
+  if (area < 0.00000001) throw new AppError("El polígono es demasiado pequeño.");
   const cross = (a: Point, b: Point, c: Point) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
   const onSegment = (a: Point, b: Point, p: Point) => cross(a,b,p) === 0 && p[0] >= Math.min(a[0],b[0]) && p[0] <= Math.max(a[0],b[0]) && p[1] >= Math.min(a[1],b[1]) && p[1] <= Math.max(a[1],b[1]);
   for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
@@ -64,7 +69,7 @@ function polygon(value: unknown): Point[] {
   return pts;
 }
 const images = ["sushi", "arroz", "nigiri", "ceviche", "padthai", "pasta", ""];
-function image(value: unknown): string { const name = text(value, "Imagen", 30); if (!images.includes(name)) throw new AppError("Imagen inválida."); return name; }
+function image(value: unknown): string { const name = text(value, "Imagen", 80); if (!images.includes(name) && !/^\/api\/media\/[a-f0-9]{48}$/.test(name)) throw new AppError("Imagen inválida."); return name; }
 function id(value: unknown): string { const result = text(value, "Identificador", 80, true); if (!/^[a-zA-Z0-9_-]+$/.test(result)) throw new AppError("Identificador inválido."); return result; }
 function rows(value: unknown): Record<string, unknown>[] { if (!Array.isArray(value) || value.length > 1000) throw new AppError("Lista inválida."); const result = value.map(object); if (new Set(result.map(r => id(r.id))).size !== result.length) throw new AppError("Identificadores repetidos."); return result; }
 
@@ -82,7 +87,7 @@ export function validateCatalog(input: unknown): Catalog {
     if (z.type !== "allowed" && z.type !== "restricted") throw new AppError("Tipo de zona inválido.");
     const minutesMin = number(z.minutesMin,"Tiempo",240), minutesMax = number(z.minutesMax,"Tiempo",240);
     if (minutesMax < minutesMin) throw new AppError("Revisa los tiempos estimados.");
-    return { id:id(z.id), name:text(z.name,"Zona",120,true), type:z.type, fee:price(z.fee,"Tarifa"), min:price(z.min,"Pedido mínimo"), minutesMin, minutesMax, active:bool(z.active), priority:number(z.priority,"Prioridad",1000), points:polygon(z.points) };
+    return { id:id(z.id), name:text(z.name,"Zona",120,true), type:z.type, fee:price(z.fee,"Tarifa"), min:price(z.min,"Pedido mínimo"), minutesMin, minutesMax, active:bool(z.active), priority:number(z.priority,"Prioridad",1000), points:polygon(z.points,z.coordinateSystem !== "wgs84"), coordinateSystem:"wgs84" };
   });
   const coupons = rows(d.coupons).map(c=>({id:id(c.id), code:text(c.code,"Código",40,true).toUpperCase(), percent:number(c.percent,"Porcentaje",100), min:price(c.min,"Mínimo"), active:bool(c.active)}));
   if (new Set(coupons.map(c=>c.code)).size !== coupons.length) throw new AppError("Cupones repetidos.");
@@ -95,7 +100,7 @@ export function validateCatalog(input: unknown): Catalog {
     return {id:id(p.id),name:text(p.name,"Promoción",120,true),description:text(p.description,"Descripción",1000),image:image(p.image),price:price(p.price,"Precio"),product,start,end,from,to,days,active:bool(p.active)};
   });
   const settings = object(d.settings);
-  return { products, categories, zones, coupons, promotions, settings:{restaurantOpen:bool(settings.restaurantOpen),deliveryOpen:bool(settings.deliveryOpen),whatsapp:false} };
+  return { products, categories, zones, coupons, promotions, settings:{restaurantOpen:bool(settings.restaurantOpen),deliveryOpen:bool(settings.deliveryOpen),whatsapp:false,...(settings.restaurantPoint ? {restaurantPoint:point(settings.restaurantPoint,false)} : {})} };
 }
 
 export function buildOrder(input: unknown, catalog: Catalog): Omit<Order,"id"|"date"> {
@@ -112,12 +117,12 @@ export function buildOrder(input: unknown, catalog: Catalog): Omit<Order,"id"|"d
     if (!Array.isArray(item.extras) || item.extras.length>30) throw new AppError("Extras inválidos.");
     const extras=item.extras.map(raw=> { const name=text(object(raw).name,"Extra",80,true), extra=choices(p.extras).find(e=>e.name===name); if (!extra) throw new AppError("Un extra ya no está disponible.",409); return extra; });
     if (new Set(extras.map(e=>e.name)).size!==extras.length) throw new AppError("Extras repetidos.");
-    const unit=(cents(p.price)+cents(selected?.cost||0)+extras.reduce((a,e)=>a+cents(e.cost),0))/100;
+    const unit=(cents(promotionPrice(p,catalog))+cents(selected?.cost||0)+extras.reduce((a,e)=>a+cents(e.cost),0))/100;
     return {productId:p.id,name:p.name,image:p.image,qty,unit,variant,extras,notes:text(item.notes,"Observaciones",200)};
   });
   const subtotalCents=items.reduce((sum,i)=>sum+cents(i.unit)*i.qty,0);
   if (d.fulfillment !== "pickup" && d.fulfillment !== "delivery") throw new AppError("Modalidad inválida.");
-  const fulfillment=d.fulfillment, deliveryPoint=fulfillment==="delivery"?point(d.point):null;
+  const fulfillment=d.fulfillment, deliveryPoint=fulfillment==="delivery"?point(d.point,d.pointSystem !== "wgs84"):null;
   let zone;
   if (deliveryPoint) {
     if (!catalog.settings.deliveryOpen) throw new AppError("El delivery está pausado.",409);
@@ -141,5 +146,5 @@ export function buildOrder(input: unknown, catalog: Catalog): Omit<Order,"id"|"d
   const cash=payment==="Efectivo"?price(Number(c.cash),"Efectivo"):0;
   if (payment==="Efectivo" && cents(cash)<cents(totals.total)) throw new AppError("El efectivo debe cubrir el total.");
   const customer: Customer={name:text(c.name,"Nombre",80,true),lastName:text(c.lastName,"Apellido",80),phone,email,building:text(c.building,"Casa o apartamento",150,fulfillment==="delivery"),floor:text(c.floor,"Piso",30),reference:text(c.reference,"Referencia",200),instructions:text(c.instructions,"Instrucciones",500),payment,cash};
-  return {items,customer,fulfillment,address:fulfillment==="delivery"?text(d.address,"Dirección",250,true):"Azumi · San Francisco, Calle 72",point:deliveryPoint,zone:zone?.name||null,minutes:zone?`${zone.minutesMin}–${zone.minutesMax} minutos`:"20–30 minutos",totals,status:"Recibido",whatsapp:false,paymentStatus:"Pendiente",coupon:code};
+  return {items,customer,fulfillment,address:fulfillment==="delivery"?text(d.address,"Dirección",250,true):"Azumi · San Francisco, Calle 72",point:deliveryPoint,pointSystem:"wgs84",zone:zone?.name||null,minutes:zone?`${zone.minutesMin}–${zone.minutesMax} minutos`:"20–30 minutos",totals,status:"Recibido",whatsapp:false,paymentStatus:"Pendiente",coupon:code};
 }

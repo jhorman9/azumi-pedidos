@@ -21,10 +21,10 @@ function startServer(){
   return server;
 }
 let child=startServer();
-const cookieJars={customer:new Map(),other:new Map(),admin:new Map()};
-async function request(who,method="GET",payload,expected=200,extraHeaders={}) {
+const cookieJars={customer:new Map(),other:new Map(),admin:new Map(),device:new Map()};
+async function request(who,method="GET",payload,expected=200,extraHeaders={},endpoint="/api/azumi") {
   const jar=cookieJars[who];
-  const response=await fetch(base+"/api/azumi",{method,headers:{...payload?{"Content-Type":"application/json"}:{},Cookie:[...jar].map(([k,v])=>k+"="+v).join("; "),Origin:base,...extraHeaders},body:payload?JSON.stringify(payload):undefined});
+  const response=await fetch(base+endpoint,{method,headers:{...payload?{"Content-Type":"application/json"}:{},Cookie:[...jar].map(([k,v])=>k+"="+v).join("; "),Origin:base,...extraHeaders},body:payload?JSON.stringify(payload):undefined});
   for(const entry of response.headers.getSetCookie()){const [cookie]=entry.split(";"), separator=cookie.indexOf("=");jar.set(cookie.slice(0,separator),cookie.slice(separator+1));}
   const data=await response.json();
   assert.equal(response.status,expected,JSON.stringify(data));
@@ -72,6 +72,7 @@ try {
   await check("Delivery valida exclusiones, mínimos y cobertura",async()=>{
     await request("customer","POST",orderPayload({fulfillment:"delivery",point:[320,140],address:"San Francisco",customer:{name:"Prueba",phone:"60000000",building:"Casa 1",payment:"Efectivo",cash:50},expectedTotal:28.08}),409);
     await request("customer","POST",orderPayload({fulfillment:"delivery",point:[0,0],address:"Sin cobertura"}),409);
+    await request("customer","POST",orderPayload({fulfillment:"delivery",point:[12,48],pointSystem:"wgs84",address:"Fuera de Panamá"}),409);
     await request("customer","POST",orderPayload({fulfillment:"delivery",point:[495,170],items:[{productId:"arroz",qty:1,variant:"Combinación",extras:[]}],coupon:"",expectedTotal:17.99}),409);
     const delivered=(await request("customer","POST",orderPayload({fulfillment:"delivery",point:[270,210],address:"San Francisco, Calle 72",customer:{name:"Prueba",phone:"60000000",building:"Casa 1",payment:"Efectivo",cash:50},expectedTotal:28.08}),201)).order;
     assert.equal(delivered.zone,"San Francisco");assert.equal(delivered.totals.delivery,2);
@@ -133,12 +134,43 @@ try {
   await check("Modelo React conserva cantidades y actualiza precios del carrito",async()=>{
     const typescript=await import("typescript");
     const compiled=typescript.transpileModule(readFileSync("lib/azumi-client.ts","utf8"),{compilerOptions:{module:typescript.ModuleKind.CommonJS,target:typescript.ScriptTarget.ES2020}}).outputText;
-    const sandbox={exports:{},Intl,Date,structuredClone};vm.runInNewContext(compiled,sandbox);
+    const modules=new Map();
+    function load(name){if(modules.has(name))return modules.get(name);const sandbox={exports:{},Intl,Date,structuredClone,require:dependency=>load(dependency.replace("./",""))};modules.set(name,sandbox.exports);const source=typescript.transpileModule(readFileSync(`lib/${name}.ts`,"utf8"),{compilerOptions:{module:typescript.ModuleKind.CommonJS,target:typescript.ScriptTarget.ES2020}}).outputText;vm.runInNewContext(source,sandbox);return sandbox.exports;}
+    const sandbox={exports:{},Intl,Date,structuredClone,require:dependency=>load(dependency.replace("./",""))};vm.runInNewContext(compiled,sandbox);
     const model=sandbox.exports,current=await request("admin"),product=current.products.find(p=>p.id==="arroz");
     const item=model.createItem(product,"Combinación",["Lumpia"],2,"Sin cebolla");assert.equal(item.unit,16.5);assert.equal(item.qty,2);
     const updated=model.reconcileCart(created.items,current);assert.equal(updated[0].unit,16.5);assert.equal(updated[0].qty,2);
     const personal={...model.emptyPersonal,cart:updated,fulfillment:"pickup",coupon:"AZUMI10"};assert.equal(model.cartTotals(current,personal).total,29.7);
+    const rounding={...current,coupons:[{code:"HALF",active:true,min:0,percent:50}]};assert.equal(model.cartTotals(rounding,{...personal,coupon:"HALF"},[{unit:0.29,qty:1}]).discount,0.15);
     const unavailable=structuredClone(current);unavailable.products.find(p=>p.id==="arroz").active=false;assert.equal(model.reconcileCart(updated,unavailable)[0].unavailable,true);
+  });
+  await check("Pagos y devoluciones requieren administrador y mantienen registro",async()=>{
+    await request("customer","PATCH",{action:"payment",id:created.id,paymentStatus:"Pagado",previousPaymentStatus:"Pendiente",note:"Efectivo"},401);
+    await request("admin","PATCH",{action:"payment",id:created.id,paymentStatus:"Devuelto",previousPaymentStatus:"Pendiente",note:"Prueba"},409);
+    const paid=(await request("admin","PATCH",{action:"payment",id:created.id,paymentStatus:"Pagado",previousPaymentStatus:"Pendiente",note:"Efectivo recibido"})).order;assert.equal(paid.paymentStatus,"Pagado");assert.equal(paid.paymentHistory.length,1);
+    await request("admin","PATCH",{action:"payment",id:created.id,paymentStatus:"Pagado",previousPaymentStatus:"Pendiente",note:"Repetido"},409);
+    const refunded=(await request("admin","PATCH",{action:"payment",id:created.id,paymentStatus:"Devuelto",previousPaymentStatus:"Pagado",note:"Devolución completa"})).order;assert.equal(refunded.paymentStatus,"Devuelto");assert.equal(refunded.paymentHistory.length,2);
+  });
+  await check("Cuenta y direcciones recuperan historial desde otro dispositivo",async()=>{
+    const endpoint="/api/customer",email="cliente@test.azumi",password="customer-test-password-2026";
+    const registered=await request("customer","POST",{action:"register",email,password,name:"Cliente registrado"},200,{},endpoint);assert.equal(registered.customer.email,email);assert.equal(registered.customer.password,undefined);assert.equal((await request("customer")).orders.length,2);
+    await request("customer","POST",{action:"profile",profile:{name:"Cliente",phone:"60000000"},addresses:[{id:"home",label:"Casa",address:"Calle 72",point:[-79.5,9]}]},200,{},endpoint);
+    await request("device","POST",{action:"profile",profile:{name:"Intruso"},addresses:[]},401,{},endpoint);
+    await request("device","POST",{action:"login",email,password:"wrong-password-2026"},401,{},endpoint);
+    await request("device","POST",{action:"login",email,password},200,{},endpoint);assert.equal((await request("device")).orders.length,2);assert.equal((await request("device","GET",undefined,200,{},endpoint)).customer.addresses[0].label,"Casa");
+    await request("device","POST",{action:"logout"},200,{},endpoint);assert.equal((await request("device")).orders.length,0);
+    await request("device","POST",{action:"reset",token:"invalid",password},400,{},endpoint);
+  });
+  await check("Promociones vigentes cambian el precio validado en servidor",async()=>{
+    admin=await request("admin");const promotion={...admin.promotions[0],id:"test-sale",product:"arroz",price:10,from:"00:00",to:"23:59",days:"0,1,2,3,4,5,6"};
+    await request("admin","PATCH",{action:"catalog",revision:admin.revision,changes:{promotions:[...admin.promotions,promotion],settings:{...admin.settings,restaurantOpen:true}}});
+    const payload=orderPayload({requestKey:randomUUID(),coupon:"",expectedTotal:23});const [first,second]=await Promise.all([request("other","POST",payload,201),request("other","POST",payload,201)]);assert.equal(first.order.id,second.order.id);assert.equal(first.order.items[0].unit,11.5);
+    const current=await request("admin");await request("admin","PATCH",{action:"catalog",revision:current.revision,changes:{promotions:admin.promotions,settings:admin.settings}});
+  });
+  await check("Imágenes propias se guardan y se sirven desde la base de datos",async()=>{
+    const form=new FormData();form.append("image",new Blob([readFileSync("public/images/products/sushi.jpg")],{type:"image/jpeg"}),"foto.jpg");
+    const response=await fetch(base+"/api/media",{method:"POST",headers:{Origin:base,Cookie:[...cookieJars.admin].map(([k,v])=>k+"="+v).join("; ")},body:form});assert.equal(response.status,201);const uploaded=await response.json();assert.match(uploaded.image,/^\/api\/media\/[a-f0-9]{48}$/);const image=await fetch(base+uploaded.image);assert.equal(image.headers.get("content-type"),"image/webp");assert.ok((await image.arrayBuffer()).byteLength>100);
+    const rejected=await fetch(base+"/api/media",{method:"POST",headers:{Origin:base},body:form});assert.equal(rejected.status,401);
   });
   await check("Cerrar sesión revoca el acceso administrativo",async()=>{
     const previous=cookieJars.admin.get("azumi_admin");await request("admin","POST",{action:"logout"});cookieJars.admin.set("azumi_admin",previous);await request("admin","PATCH",{action:"catalog",revision:1,changes:{settings:initial.settings}},401);

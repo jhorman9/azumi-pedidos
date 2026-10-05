@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as store from "@/lib/azumi-store";
 import { AppError, object } from "@/lib/azumi-validation";
+import { customerOwner } from "@/lib/customer-store";
+import { notifyOrder } from "@/lib/azumi-mail";
+import { after } from "next/server";
+import { sameOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,8 +29,7 @@ async function requireAdmin(request: NextRequest) {
 }
 
 async function body(request: NextRequest) {
-  const origin = request.headers.get("origin");
-  if (origin && origin !== request.nextUrl.origin) throw new AppError("Origen no permitido.", 403);
+  if (!sameOrigin(request)) throw new AppError("Origen no permitido.", 403);
   if (!request.headers.get("content-type")?.startsWith("application/json")) throw new AppError("Envia datos JSON.", 415);
   const raw = await request.text();
   if (Buffer.byteLength(raw) > 512000) throw new AppError("Solicitud demasiado grande.", 413);
@@ -43,7 +46,7 @@ function failure(error: unknown) {
 export async function GET(request: NextRequest) {
   try {
     const owner = visitor(request);
-    const result = response(await store.snapshot(owner, request.cookies.get("azumi_admin")?.value));
+    const result = response(await store.snapshot(await customerOwner(request.cookies.get("azumi_customer")?.value, owner), request.cookies.get("azumi_admin")?.value));
     result.cookies.set("azumi_visitor", owner, { ...cookieOptions, maxAge: 365 * 24 * 60 * 60 });
     return result;
   } catch (error) { return failure(error); }
@@ -64,7 +67,8 @@ export async function POST(request: NextRequest) {
       return result;
     }
     if (d.action === "order") {
-      const owner = visitor(request), order = await store.placeOrder(d, owner), result = response({ order }, 201);
+      const owner = visitor(request), order = await store.placeOrder(d, await customerOwner(request.cookies.get("azumi_customer")?.value, owner)), result = response({ order }, 201);
+      after(() => notifyOrder(order));
       result.cookies.set("azumi_visitor", owner, { ...cookieOptions, maxAge: 365 * 24 * 60 * 60 });
       return result;
     }
@@ -77,7 +81,11 @@ export async function PATCH(request: NextRequest) {
     const d = await body(request);
     await requireAdmin(request);
     if (d.action === "catalog") return response(await store.patchCatalog(d));
-    if (d.action === "status") return response({ order: await store.updateStatus(d) });
+    if (d.action === "status" || d.action === "payment") {
+      const order = await store.updateStatus(d.action === "payment" ? { ...d, status: "payment" } : d, d.action === "payment");
+      after(() => notifyOrder(order));
+      return response({ order });
+    }
     throw new AppError("Accion invalida.");
   } catch (error) { return failure(error); }
 }

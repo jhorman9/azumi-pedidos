@@ -53,7 +53,23 @@ No guardes la contrasena real dentro del codigo ni en archivos que vayas a subir
 - Validacion del servidor: precios actuales, variantes, extras, minimos, descuentos, cobertura y efectivo.
 - Reintentos de checkout sin duplicar pedidos, transacciones y deteccion de cambios simultaneos en catalogo y estados.
 
-Los visitantes acceden unicamente a los pedidos asociados a su cookie; el administrador puede consultar todos. Como el checkout es de invitado, borrar las cookies o usar otro navegador impide recuperar ese historial.
+Los visitantes acceden a los pedidos asociados a su cookie. Las cuentas de clientes permiten registro, login, perfil, direcciones e historial entre dispositivos. Al iniciar sesion se vinculan los pedidos de invitado del navegador a la cuenta. Las contrasenas se almacenan con scrypt y las sesiones usan cookies HttpOnly.
+
+El administrador registra pagos recibidos y devoluciones completas, con referencia e historial. No hay cobros online. Puede contactar al cliente por telefono o abrir WhatsApp; ese enlace requiere enviar el mensaje manualmente.
+
+Las fotos JPG/PNG/WebP se suben desde el editor, se convierten a WebP y se guardan en la tabla `documents` de la base de datos (tambien las cuentas y sus sesiones). Las promociones vigentes aplican el menor precio al producto, sin descontar extras; los cupones se aplican despues.
+
+## Delivery y correo
+
+Leaflet muestra calles OpenStreetMap, GPS, marcador arrastrable y busqueda manual de lugares. La busqueda usa Nominatim, con cache y limite de una solicitud por segundo por proceso; no hace autocompletado. Para varios procesos o mas trafico configura un proveedor propio en `AZUMI_GEOCODER_URL`. El GPS necesita HTTPS (localhost tambien funciona).
+
+Los poligonos del editor antiguo se convierten a coordenadas geograficas para conservar la cobertura existente. Sus limites y la posicion de referencia del restaurante son aproximados: revisa las zonas contra las calles reales en Administracion > Delivery y confirma latitud/longitud del restaurante en Administracion > Configuracion antes de publicar.
+
+Configura `AZUMI_APP_URL` con el dominio HTTPS real y las variables SMTP de `.env.example` con los datos del buzon (la clave del correo es distinta de la de MySQL). `AZUMI_RESTAURANT_EMAIL` recibe pedidos nuevos, cambios de estado y registros de pago. El cliente recibe confirmaciones si dio su correo. El envio se ejecuta despues de guardar el pedido: un fallo de correo no pierde el pedido. Los envios correctos quedan registrados para evitar repetirlos al reintentar; no hay cola externa ni reintentos automaticos de correos fallidos. La recuperacion de contrasena requiere SMTP y URL configurados; los enlaces caducan en 30 minutos y revocan sesiones anteriores.
+
+## Copias de seguridad
+
+En produccion MySQL, programa copias desde Hostinger y conserva una exportacion completa de la base, incluida `documents`. Comprueba una restauracion en una base de prueba antes de publicar. Para SQLite usa una copia consistente con la app detenida o la API de backup de SQLite; no copies solamente el archivo principal mientras la app escribe en WAL. No se han activado copias ni desplegado el sitio en tu cuenta de hosting desde este proyecto.
 
 ## Verificacion
 

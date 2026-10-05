@@ -2,8 +2,10 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useAzumi } from "@/components/azumi-provider";
-import { Badge, Button, Icon, PageHeading, ProductPhoto } from "@/components/ui";
+import { Badge, Button, Field, Icon, PageHeading, ProductPhoto } from "@/components/ui";
 import { money, promoActive } from "@/lib/azumi-client";
+import type { Point, Settings } from "@/lib/azumi-types";
+import { restaurantPoint } from "@/lib/delivery-geo";
 
 export type Resource = "products" | "categories" | "promotions" | "coupons";
 export const resourceMeta: Record<Resource, { title: string; path: string; singular: string }> = { products: { title: "Productos", path: "productos", singular: "producto" }, categories: { title: "Categorías", path: "categorias", singular: "categoría" }, promotions: { title: "Promociones", path: "promociones", singular: "promoción" }, coupons: { title: "Cupones", path: "cupones", singular: "cupón" } };
@@ -21,7 +23,14 @@ export function SettingsScreen() {
   const { catalog, snapshot } = useAzumi();
   return <SettingsForm key={snapshot?.revision} settings={catalog.settings} />;
 }
-function SettingsForm({ settings }: { settings: { restaurantOpen: boolean; deliveryOpen: boolean; whatsapp: boolean } }) {
-  const { busy, run, saveCatalog } = useAzumi(), [restaurantOpen, setRestaurantOpen] = useState(settings.restaurantOpen), [deliveryOpen, setDeliveryOpen] = useState(settings.deliveryOpen);
-  return <><PageHeading title="Configuración" /><form className="card narrow-form" data-editing="true" onSubmit={e => { e.preventDefault(); void run(() => saveCatalog({ settings: { restaurantOpen, deliveryOpen, whatsapp: false } })); }}><h3>Disponibilidad</h3><label className="choice"><input type="checkbox" checked={restaurantOpen} onChange={e => setRestaurantOpen(e.target.checked)} />Aceptar pedidos</label><label className="choice"><input type="checkbox" checked={deliveryOpen} onChange={e => setDeliveryOpen(e.target.checked)} />Delivery habilitado</label><Button className="spacer" disabled={busy} type="submit">{busy ? "Guardando…" : "Guardar configuración"}</Button></form><section className="card narrow-form"><h3>Conexión al servidor</h3><p className="muted">El catálogo y los pedidos se guardan en la base de datos. El pago se realiza al recibir.</p><p className="helper-text">Las zonas usan un mapa ilustrativo. La cartografía real y las notificaciones automáticas necesitan una integración adicional.</p></section></>;
+function SettingsForm({ settings }: { settings: Settings }) {
+  const { busy, run, saveCatalog } = useAzumi();
+  const [restaurantOpen, setRestaurantOpen] = useState(settings.restaurantOpen), [deliveryOpen, setDeliveryOpen] = useState(settings.deliveryOpen);
+  const [location, setLocation] = useState<Point>(settings.restaurantPoint || restaurantPoint);
+  const [confirmed, setConfirmed] = useState(!!settings.restaurantPoint);
+  return <><PageHeading title="Configuración" /><form className="card narrow-form" data-editing="true" onSubmit={e => { e.preventDefault(); void run(() => saveCatalog({ settings: { restaurantOpen, deliveryOpen, whatsapp: false, ...(confirmed ? { restaurantPoint: location } : {}) } })); }}>
+    <h3>Disponibilidad</h3><label className="choice"><input type="checkbox" checked={restaurantOpen} onChange={e => setRestaurantOpen(e.target.checked)} />Aceptar pedidos</label><label className="choice"><input type="checkbox" checked={deliveryOpen} onChange={e => setDeliveryOpen(e.target.checked)} />Delivery habilitado</label>
+    <h3>Ubicación del restaurante</h3><div className="form-grid"><Field label="Latitud" type="number" min={-90} max={90} step="0.000001" value={location[1]} onChange={e => setLocation(p => [p[0], Number(e.target.value)])} /><Field label="Longitud" type="number" min={-180} max={180} step="0.000001" value={location[0]} onChange={e => setLocation(p => [Number(e.target.value), p[1]])} /></div><label className="choice"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />Ubicación exacta confirmada</label>
+    <Button className="spacer" disabled={busy} type="submit">{busy ? "Guardando…" : "Guardar configuración"}</Button>
+  </form><section className="card narrow-form"><h3>Conexión al servidor</h3><p className="muted">Los pedidos llegan al panel del restaurante. El cobro se coordina directamente con el cliente.</p></section></>;
 }

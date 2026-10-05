@@ -6,6 +6,7 @@ import { createPool, type Pool, type PoolConnection, type PoolOptions, type Resu
 import seed from "./azumi-seed.json";
 import type { Catalog, Order, Status } from "./azumi-types";
 import { AppError, buildOrder, object, text, validateCatalog } from "./azumi-validation";
+import { geographicCatalog, geographicPoint } from "./delivery-geo";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -89,9 +90,45 @@ function createSqliteStore(): SqliteStore {
   return { kind: "sqlite", database };
 }
 
-async function db(): Promise<Store> {
+export async function db(): Promise<Store> {
   store ??= mysqlEnabled() ? createMysqlStore() : Promise.resolve(createSqliteStore());
   return store;
+}
+
+let documentsReady: Promise<void> | undefined;
+async function documentStore() {
+  const conn = await db();
+  documentsReady ??= (async () => {
+    if (conn.kind === "sqlite") conn.database.exec("CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, data TEXT NOT NULL)");
+    else await conn.pool.query("CREATE TABLE IF NOT EXISTS documents (id VARCHAR(191) PRIMARY KEY, data LONGTEXT NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin");
+  })();
+  await documentsReady;
+  return conn;
+}
+export async function readDocument<T>(id: string): Promise<T | null> {
+  const conn = await documentStore();
+  const row = conn.kind === "sqlite" ? conn.database.prepare("SELECT data FROM documents WHERE id=?").get(id) : await mysqlGet<RowDataPacket>(conn.pool, "SELECT data FROM documents WHERE id=?", [id]);
+  return row ? JSON.parse(String(row.data)) as T : null;
+}
+export async function writeDocument(id: string, value: unknown, insertOnly = false, previous?: unknown) {
+  const conn = await documentStore(), data = JSON.stringify(value);
+  if (previous !== undefined) {
+    const params = [data, id, JSON.stringify(previous)];
+    if (conn.kind === "sqlite") return Number(conn.database.prepare("UPDATE documents SET data=? WHERE id=? AND data=?").run(...params).changes) > 0;
+    const [result] = await conn.pool.execute<ResultSetHeader>("UPDATE documents SET data=? WHERE id=? AND data=?", params);
+    return result.affectedRows > 0;
+  }
+  if (conn.kind === "sqlite") {
+    const result = conn.database.prepare(insertOnly ? "INSERT OR IGNORE INTO documents(id,data) VALUES(?,?)" : "INSERT INTO documents(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(id, data);
+    return Number(result.changes) > 0;
+  }
+  const [result] = await conn.pool.execute<ResultSetHeader>(insertOnly ? "INSERT IGNORE INTO documents(id,data) VALUES(?,?)" : "INSERT INTO documents(id,data) VALUES(?,?) ON DUPLICATE KEY UPDATE data=VALUES(data)", [id, data]);
+  return result.affectedRows > 0;
+}
+export async function deleteDocument(id: string) {
+  const conn = await documentStore();
+  if (conn.kind === "sqlite") conn.database.prepare("DELETE FROM documents WHERE id=?").run(id);
+  else await conn.pool.execute("DELETE FROM documents WHERE id=?", [id]);
 }
 
 type MysqlExecutor = Pool | PoolConnection;
@@ -111,11 +148,11 @@ async function mysqlAll<T extends RowDataPacket>(conn: MysqlExecutor, sql: strin
 async function catalogFrom(conn: Store | MysqlExecutor): Promise<{ revision: number; data: Catalog }> {
   if ("kind" in conn && conn.kind === "sqlite") {
     const row = conn.database.prepare("SELECT revision,data FROM catalog WHERE id=1").get()!;
-    return { revision: Number(row.revision), data: JSON.parse(String(row.data)) as Catalog };
+    return { revision: Number(row.revision), data: geographicCatalog(JSON.parse(String(row.data)) as Catalog) };
   }
   const executor = "kind" in conn ? conn.pool : conn;
   const row = await mysqlGet<RowDataPacket>(executor, "SELECT revision, data FROM catalog WHERE id=1");
-  return { revision: Number(row.revision), data: JSON.parse(String(row.data)) as Catalog };
+  return { revision: Number(row.revision), data: geographicCatalog(JSON.parse(String(row.data)) as Catalog) };
 }
 
 export async function catalog(): Promise<{ revision: number; data: Catalog }> {
@@ -201,21 +238,34 @@ export async function logout(token: string | undefined) {
 
 export const visitorToken = () => randomBytes(32).toString("hex");
 
+function geographicOrder(order: Order): Order { return { ...order, point: order.point ? geographicPoint(order.point, order.pointSystem !== "wgs84") : null, pointSystem: "wgs84" }; }
+
 export async function orders(owner: string, admin: boolean, existing?: Store): Promise<Order[]> {
   const conn = existing || await db();
   if (conn.kind === "sqlite") {
     const rows = admin
       ? conn.database.prepare("SELECT data FROM orders ORDER BY sequence").all()
       : conn.database.prepare("SELECT data FROM orders WHERE owner=? ORDER BY sequence").all(hash(owner));
-    return rows.map(row => JSON.parse(String(row.data)) as Order);
+    return rows.map(row => geographicOrder(JSON.parse(String(row.data)) as Order));
   }
   const rows = admin
     ? await mysqlAll<RowDataPacket>(conn.pool, "SELECT data FROM orders ORDER BY sequence")
     : await mysqlAll<RowDataPacket>(conn.pool, "SELECT data FROM orders WHERE owner=? ORDER BY sequence", [hash(owner)]);
-  return rows.map(row => JSON.parse(String(row.data)) as Order);
+  return rows.map(row => geographicOrder(JSON.parse(String(row.data)) as Order));
 }
 
-export async function placeOrder(input: unknown, owner: string): Promise<Order> {
+let writeQueue = Promise.resolve();
+async function serializedWrite<T>(action: () => Promise<T>): Promise<T> {
+  const previous = writeQueue;
+  let release!: () => void;
+  writeQueue = new Promise<void>(resolve => { release = resolve; });
+  await previous;
+  try { return await action(); } finally { release(); }
+}
+export function placeOrder(input: unknown, owner: string): Promise<Order> {
+  return serializedWrite(() => placeOrderInternal(input, owner)).then(geographicOrder);
+}
+async function placeOrderInternal(input: unknown, owner: string): Promise<Order> {
   const d = object(input), key = text(d.requestKey, "Identificador de pedido", 80, true);
   if (!/^[a-zA-Z0-9_-]{16,80}$/.test(key)) throw new AppError("Identificador de pedido invalido.");
   const conn = await db();
@@ -247,7 +297,8 @@ export async function placeOrder(input: unknown, owner: string): Promise<Order> 
   finally { connection.release(); }
 }
 
-export async function patchCatalog(input: unknown) {
+export function patchCatalog(input: unknown) { return serializedWrite(() => patchCatalogInternal(input)); }
+async function patchCatalogInternal(input: unknown) {
   const d = object(input), changes = object(d.changes), allowed = ["products", "categories", "zones", "promotions", "coupons", "settings"];
   if (!Object.keys(changes).length || Object.keys(changes).some(key => !allowed.includes(key))) throw new AppError("Cambios invalidos.");
   const conn = await db();
@@ -275,10 +326,18 @@ export async function patchCatalog(input: unknown) {
   finally { connection.release(); }
 }
 
-export async function updateStatus(input: unknown): Promise<Order> {
+export function updateStatus(input: unknown, payment = false): Promise<Order> { return serializedWrite(() => updateStatusInternal(input, payment)); }
+async function updateStatusInternal(input: unknown, payment = false): Promise<Order> {
   const d = object(input), id = text(d.id, "Pedido", 80, true), status = text(d.status, "Estado", 30, true) as Status;
   const conn = await db();
   const apply = (order: Order) => {
+    if (payment) {
+      if (d.previousPaymentStatus !== order.paymentStatus) throw new AppError("El pago fue actualizado por otra sesión. Revisa su estado actual.", 409);
+      if (d.paymentStatus !== "Pagado" && d.paymentStatus !== "Devuelto") throw new AppError("Estado de pago inválido.");
+      if ((d.paymentStatus === "Pagado" && order.paymentStatus !== "Pendiente") || (d.paymentStatus === "Devuelto" && order.paymentStatus !== "Pagado")) throw new AppError("Ese cambio de pago no está permitido.", 409);
+      const note = text(d.note, "Referencia del pago o devolución", 250, true);
+      return { ...order, paymentStatus: d.paymentStatus, paymentHistory: [...(order.paymentHistory || []), { status: d.paymentStatus, note, date: new Date().toISOString() }] } as Order;
+    }
     if (d.previousStatus !== order.status) throw new AppError("El pedido fue actualizado por otra sesion. Revisa su estado actual.", 409);
     const transitions: Record<Status, Status[]> = { Recibido: ["Recibido", "Confirmado", "Cancelado"], Confirmado: ["Confirmado", ...(order.fulfillment === "delivery" ? ["En camino" as Status] : ["Entregado" as Status]), "Cancelado"], "En camino": ["En camino", "Entregado", "Cancelado"], Entregado: ["Entregado"], Cancelado: ["Cancelado"] };
     if (!transitions[order.status].includes(status)) throw new AppError("Ese cambio de estado no esta permitido.", 409);

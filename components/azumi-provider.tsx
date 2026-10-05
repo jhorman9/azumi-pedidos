@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { cartTotals, coverage, emptyCatalog, emptyPersonal, readPersonal, reconcileCart, type Personal, type Snapshot } from "@/lib/azumi-client";
 import type { Catalog, Order, Status } from "@/lib/azumi-types";
+import type { CustomerAccount } from "@/lib/customer-store";
 
 class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 export async function api<T>(method = "GET", body?: unknown): Promise<T> {
@@ -12,6 +13,7 @@ export async function api<T>(method = "GET", body?: unknown): Promise<T> {
   return data as T;
 }
 type Store = {
+  customer: CustomerAccount | null; accountAction: (data: Record<string, unknown>) => Promise<string | undefined>;
   snapshot: Snapshot | null; catalog: Catalog; personal: Personal; cart: Personal["cart"]; totals: ReturnType<typeof cartTotals>; cov: ReturnType<typeof coverage>;
   ready: boolean; personalReady: boolean; error: string; busy: boolean; notify: (message: string) => void; refresh: () => Promise<Snapshot>;
   updatePersonal: (update: Partial<Personal> | ((current: Personal) => Personal)) => void;
@@ -26,19 +28,30 @@ export function AzumiProvider({ children, initialSnapshot }: { children: ReactNo
   const [snapshot, setSnapshot] = useState<Snapshot | null>(initialSnapshot), [personal, setPersonal] = useState<Personal>(emptyPersonal);
   const [ready, setReady] = useState(true), [error, setError] = useState(""), [busy, setBusy] = useState(false), [message, setMessage] = useState("");
   const [personalReady, setPersonalReady] = useState(false);
+  const [customer, setCustomer] = useState<CustomerAccount | null>(null);
   const hydrated = useRef(false);
   const lock = useRef(false), inflight = useRef<Promise<Snapshot> | null>(null);
+  const pendingOrder = useRef<{ fingerprint: string; key: string } | null>(null);
+  const knownOrders = useRef<Set<string> | null>(null);
   const notify = useCallback((value: string) => setMessage(value), []);
   const refresh = useCallback(async () => {
     if (inflight.current) await inflight.current.catch(() => {});
     const task = api<Snapshot>(); inflight.current = task;
-    try { const data = await task; data.categories.sort((a, b) => a.order - b.order); setSnapshot(data); setError(""); return data; }
+    try {
+      const data = await task;
+      if (data.adminOrders) {
+        const added = data.adminOrders.filter(order => knownOrders.current && !knownOrders.current.has(order.id));
+        if (added.length) notify(`Nuevo pedido: ${added.map(order => order.id).join(", ")}`);
+        knownOrders.current = new Set(data.adminOrders.map(order => order.id));
+      } else knownOrders.current = null;
+      data.categories.sort((a, b) => a.order - b.order); setSnapshot(data); setError(""); return data;
+    }
     finally { if (inflight.current === task) inflight.current = null; }
-  }, []);
+  }, [notify]);
   useEffect(() => {
     let active = true;
     async function initialize() {
-      try { await refresh(); if (active) { const preferences = readPersonal(); hydrated.current = true; setPersonal(preferences); setPersonalReady(true); setReady(true); } }
+      try { await refresh(); const response = await fetch("/api/customer", { cache: "no-store" }); const account = response.ok ? (await response.json()).customer as CustomerAccount | null : null; if (active) { const preferences = readPersonal(); hydrated.current = true; setCustomer(account); setPersonal(account ? { ...preferences, profile: { ...preferences.profile, ...account.profile }, addresses: account.addresses } : preferences); setPersonalReady(true); setReady(true); } }
       catch (e) { if (active) { setError(e instanceof Error ? e.message : "No pudimos cargar el menú."); setReady(false); } }
     }
     void initialize();
@@ -79,19 +92,39 @@ export function AzumiProvider({ children, initialSnapshot }: { children: ReactNo
   }
   async function placeOrder() {
     if (cart.some(c => c.unavailable)) throw new Error("Edita o elimina los productos que ya no están disponibles.");
-    const payload = { items: cart, customer: personal.profile, fulfillment: personal.fulfillment, address: personal.deliveryAddress, point: personal.deliveryPoint, coupon: personal.coupon, expectedTotal: totals.total };
+    const payload = { items: cart, customer: personal.profile, fulfillment: personal.fulfillment, address: personal.deliveryAddress, point: personal.deliveryPoint, pointSystem: "wgs84", coupon: personal.coupon, expectedTotal: totals.total };
     const fingerprint = JSON.stringify(payload); let pending: { fingerprint: string; key: string } | null = null;
     try { pending = JSON.parse(sessionStorage.getItem("azumi-pending-order") || "null"); } catch {}
-    if (!pending || pending.fingerprint !== fingerprint) pending = { fingerprint, key: crypto.randomUUID() };
-    sessionStorage.setItem("azumi-pending-order", JSON.stringify(pending));
+    pending = pending?.fingerprint === fingerprint ? pending : pendingOrder.current?.fingerprint === fingerprint ? pendingOrder.current : null;
+    if (!pending) {
+      const bytes = new Uint8Array(24);
+      crypto.getRandomValues(bytes);
+      pending = { fingerprint, key: Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("") };
+    }
+    pendingOrder.current = pending;
+    try { sessionStorage.setItem("azumi-pending-order", JSON.stringify(pending)); } catch { /* Retry key remains in memory. */ }
     const { order } = await api<{ order: Order }>("POST", { action: "order", ...payload, requestKey: pending.key });
     setSnapshot(current => current ? { ...current, orders: [...current.orders.filter(o => o.id !== order.id), order], adminOrders: current.adminOrders ? [...current.adminOrders.filter(o => o.id !== order.id), order] : undefined } : current);
-    updatePersonal({ cart: [], coupon: "" }); sessionStorage.removeItem("azumi-pending-order"); return order;
+    updatePersonal({ cart: [], coupon: "" }); pendingOrder.current = null;
+    try { sessionStorage.removeItem("azumi-pending-order"); } catch { /* The order is already saved. */ }
+    return order;
   }
   async function changeStatus(order: Order, status: Status) { await api("PATCH", { action: "status", id: order.id, previousStatus: order.status, status }); await refresh(); notify("Estado actualizado"); }
   async function login(email: string, password: string) { await api("POST", { action: "login", email, password }); await refresh(); }
   async function logout() { await api("POST", { action: "logout" }); await refresh(); }
-  const value: Store = { snapshot, catalog, personal, cart, totals, cov, ready, personalReady, error, busy, notify, refresh, updatePersonal, run, saveCatalog, placeOrder, changeStatus, login, logout };
+  async function accountAction(data: Record<string, unknown>) {
+    const response = await fetch("/api/customer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+    const result = await response.json();
+    if (!response.ok) throw new ApiError(result.error || "No pudimos actualizar tu cuenta.", response.status);
+    if ("customer" in result) {
+      setCustomer(result.customer);
+      if (result.customer) updatePersonal(p => ({ ...p, profile: { ...p.profile, ...result.customer.profile }, addresses: result.customer.addresses }));
+      else updatePersonal(p => ({ ...p, profile: {}, addresses: [], favorites: [] }));
+      await refresh();
+    }
+    return result.message as string | undefined;
+  }
+  const value: Store = { customer, accountAction, snapshot, catalog, personal, cart, totals, cov, ready, personalReady, error, busy, notify, refresh, updatePersonal, run, saveCatalog, placeOrder, changeStatus, login, logout };
   return <Context.Provider value={value}>{children}{message && <div className="toast" role="status">{message}<button aria-label="Cerrar aviso" onClick={() => setMessage("")}>×</button></div>}</Context.Provider>;
 }
 export function useAzumi() { const value = useContext(Context); if (!value) throw new Error("AzumiProvider is required"); return value; }
