@@ -1,4 +1,4 @@
-import type { Catalog, Choice, Customer, Item, Point, Product, Status, Order } from "./azumi-types";
+import type { Catalog, Choice, Customer, Item, Point, Product, Order } from "./azumi-types";
 import { geographicPoint } from "./delivery-geo";
 import { promotionPrice } from "./promotions";
 export { promoActive } from "./promotions";
@@ -6,7 +6,7 @@ export { promoActive } from "./promotions";
 export type CartItem = Item & { unavailable?: boolean };
 export type Address = { id: string; label: string; address: string; point: Point };
 export type Personal = { cart: CartItem[]; favorites: string[]; addresses: Address[]; profile: Partial<Customer>; coupon: string; deliveryPoint: Point | null; deliveryPointSystem: "wgs84"; deliveryAddress: string; fulfillment: "pickup" | "delivery" };
-export type Snapshot = Catalog & { revision: number; orders: Order[]; adminOrders?: Order[]; admin: boolean; development: boolean; serverTime: string };
+export type Snapshot = Catalog & { revision: number; orders: Order[]; adminOrders?: Order[]; admin: boolean; customerAuthenticated: boolean; development: boolean; serverTime: string };
 export const emptyPersonal: Personal = { cart: [], favorites: [], addresses: [], profile: {}, coupon: "", deliveryPoint: null, deliveryPointSystem: "wgs84", deliveryAddress: "", fulfillment: "delivery" };
 export const emptyCatalog: Catalog = { products: [], categories: [], zones: [], promotions: [], coupons: [], settings: { restaurantOpen: false, deliveryOpen: false, whatsapp: false } };
 export const money = (n: number) => new Intl.NumberFormat("es-PA", { style: "currency", currency: "USD" }).format(n);
@@ -55,10 +55,7 @@ export function reconcileCart(items: CartItem[], catalog: Catalog): CartItem[] {
     return createItem(p, item.variant, item.extras.map(e => e.name), item.qty, item.notes);
   });
 }
-export function statusOptions(order: Order): Status[] {
-  const values: Record<Status, Status[]> = { Recibido: ["Recibido", "Confirmado", "Cancelado"], Confirmado: ["Confirmado", order.fulfillment === "delivery" ? "En camino" : "Entregado", "Cancelado"], "En camino": ["En camino", "Entregado", "Cancelado"], Entregado: ["Entregado"], Cancelado: ["Cancelado"] };
-  return values[order.status];
-}
+export { statusOptions } from "./order-status";
 export function readPersonal(): Personal {
   try {
     const raw = JSON.parse(localStorage.getItem("azumi-customer-v2") || "null");

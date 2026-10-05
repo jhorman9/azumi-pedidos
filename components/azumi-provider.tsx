@@ -4,6 +4,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { cartTotals, coverage, emptyCatalog, emptyPersonal, readPersonal, reconcileCart, type Personal, type Snapshot } from "@/lib/azumi-client";
 import type { Catalog, Order, Status } from "@/lib/azumi-types";
 import type { CustomerAccount } from "@/lib/customer-store";
+import { stopPush } from "./push-settings";
+import { statusMessage } from "@/lib/order-status";
 
 class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 export async function api<T>(method = "GET", body?: unknown): Promise<T> {
@@ -33,12 +35,19 @@ export function AzumiProvider({ children, initialSnapshot }: { children: ReactNo
   const lock = useRef(false), inflight = useRef<Promise<Snapshot> | null>(null);
   const pendingOrder = useRef<{ fingerprint: string; key: string } | null>(null);
   const knownOrders = useRef<Set<string> | null>(null);
+  const customerStatuses = useRef<Map<string, Status> | null>(null);
   const notify = useCallback((value: string) => setMessage(value), []);
   const refresh = useCallback(async () => {
     if (inflight.current) await inflight.current.catch(() => {});
     const task = api<Snapshot>(); inflight.current = task;
     try {
       const data = await task;
+      if (!data.customerAuthenticated) setCustomer(null);
+      for (const order of data.orders) {
+        const previous = customerStatuses.current?.get(order.id);
+        if (previous && previous !== order.status) notify(`${order.id} · ${statusMessage(order)}`);
+      }
+      customerStatuses.current = new Map(data.orders.map(order => [order.id, order.status]));
       if (data.adminOrders) {
         const added = data.adminOrders.filter(order => knownOrders.current && !knownOrders.current.has(order.id));
         if (added.length) notify(`Nuevo pedido: ${added.map(order => order.id).join(", ")}`);
@@ -51,7 +60,7 @@ export function AzumiProvider({ children, initialSnapshot }: { children: ReactNo
   useEffect(() => {
     let active = true;
     async function initialize() {
-      try { await refresh(); const response = await fetch("/api/customer", { cache: "no-store" }); const account = response.ok ? (await response.json()).customer as CustomerAccount | null : null; if (active) { const preferences = readPersonal(); hydrated.current = true; setCustomer(account); setPersonal(account ? { ...preferences, profile: { ...preferences.profile, ...account.profile }, addresses: account.addresses } : preferences); setPersonalReady(true); setReady(true); } }
+      try { await refresh(); const response = await fetch("/api/customer", { cache: "no-store" }); const accountData = response.ok ? await response.json() : { customer: null }; const account = accountData.customer as CustomerAccount | null; if (active) { const preferences = readPersonal(); hydrated.current = true; setCustomer(account); setPersonal(account ? { ...preferences, profile: { ...preferences.profile, ...account.profile }, addresses: account.addresses } : preferences); setPersonalReady(true); setReady(true); } }
       catch (e) { if (active) { setError(e instanceof Error ? e.message : "No pudimos cargar el menú."); setReady(false); } }
     }
     void initialize();
@@ -72,9 +81,11 @@ export function AzumiProvider({ children, initialSnapshot }: { children: ReactNo
     };
     const timer = setInterval(poll, 10000);
     window.addEventListener("focus", poll);
+    const pushUpdate = () => { if (!lock.current) void refresh().catch(() => {}); };
+    navigator.serviceWorker?.addEventListener("message", pushUpdate);
     const storage = (event: StorageEvent) => { if (event.key === "azumi-customer-v2") setPersonal(readPersonal()); };
     window.addEventListener("storage", storage);
-    return () => { clearInterval(timer); window.removeEventListener("focus", poll); window.removeEventListener("storage", storage); };
+    return () => { clearInterval(timer); window.removeEventListener("focus", poll); window.removeEventListener("storage", storage); navigator.serviceWorker?.removeEventListener("message", pushUpdate); };
   }, [ready, refresh]);
   const catalog = snapshot || emptyCatalog;
   const cart = useMemo(() => snapshot ? reconcileCart(personal.cart, snapshot) : personal.cart, [personal.cart, snapshot]);
@@ -91,6 +102,7 @@ export function AzumiProvider({ children, initialSnapshot }: { children: ReactNo
     await api("PATCH", { action: "catalog", changes, revision: baseRevision }); await refresh(); notify("Cambios guardados");
   }
   async function placeOrder() {
+    if (!customer) throw new Error("Inicia sesión o crea una cuenta para realizar tu pedido.");
     if (cart.some(c => c.unavailable)) throw new Error("Edita o elimina los productos que ya no están disponibles.");
     const payload = { items: cart, customer: personal.profile, fulfillment: personal.fulfillment, address: personal.deliveryAddress, point: personal.deliveryPoint, pointSystem: "wgs84", coupon: personal.coupon, expectedTotal: totals.total };
     const fingerprint = JSON.stringify(payload); let pending: { fingerprint: string; key: string } | null = null;
@@ -111,8 +123,9 @@ export function AzumiProvider({ children, initialSnapshot }: { children: ReactNo
   }
   async function changeStatus(order: Order, status: Status) { await api("PATCH", { action: "status", id: order.id, previousStatus: order.status, status }); await refresh(); notify("Estado actualizado"); }
   async function login(email: string, password: string) { await api("POST", { action: "login", email, password }); await refresh(); }
-  async function logout() { await api("POST", { action: "logout" }); await refresh(); }
+  async function logout() { await stopPush("admin").catch(() => {}); await api("POST", { action: "logout" }); await refresh(); }
   async function accountAction(data: Record<string, unknown>) {
+    if (data.action === "logout") await stopPush("customer").catch(() => {});
     const response = await fetch("/api/customer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
     const result = await response.json();
     if (!response.ok) throw new ApiError(result.error || "No pudimos actualizar tu cuenta.", response.status);

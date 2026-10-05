@@ -13,7 +13,7 @@ export async function sendMail(to: string, subject: string, text: string) {
 
 export async function notifyOrder(order: Order) {
   if (!mailConfigured()) return;
-  const text = `Pedido ${order.id}\nEstado: ${order.status}\nPago: ${order.paymentStatus}\nTotal: $${order.totals.total.toFixed(2)}\n${order.items.map(i => `${i.qty} x ${i.name} (${i.variant})`).join("\n")}\n${order.fulfillment === "delivery" ? "Delivery" : "Retiro"}\n${order.address}\nCliente: ${order.customer.name}\nTeléfono: ${order.customer.phone}\nEl restaurante coordina el pago directamente con el cliente.`;
+  const text = `Pedido ${order.id}\nEstado: ${order.status}\nPago: ${order.paymentStatus}\nTotal: $${order.totals.total.toFixed(2)}\n${order.items.map(i => `${i.qty} x ${i.name} (${i.variant})`).join("\n")}\n${order.fulfillment === "delivery" ? "Delivery" : "Retiro"}\n${order.address}\nCliente: ${order.customer.name}\nTeléfono: ${order.customer.phone}\nWhatsApp: ${order.customer.whatsappPhone ? "+" + order.customer.whatsappPhone : "No registrado"}\nEl restaurante coordina el pago directamente con el cliente.`;
   for (const recipient of [process.env.AZUMI_RESTAURANT_EMAIL, order.customer.email].filter(Boolean) as string[]) {
     const key = `mail_${order.id}_${order.status}_${order.paymentStatus}_${Buffer.from(recipient).toString("hex").slice(0, 100)}`;
     try {

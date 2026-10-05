@@ -17,6 +17,15 @@ export function text(value: unknown, label: string, max = 200, required = false)
   if (required && !result) throw new AppError(`${label} es obligatorio.`);
   return result;
 }
+export function whatsappNumber(value: unknown, required = false): string {
+  const raw = text(value, "WhatsApp", 30, required);
+  if (!raw) return "";
+  if (!/^\+?[\d\s().-]+$/.test(raw)) throw new AppError("WhatsApp inválido.");
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 8 && !digits.startsWith("0") && !raw.startsWith("+")) return `507${digits}`;
+  if (digits.length < 9 || digits.length > 15 || digits.startsWith("0")) throw new AppError("Escribe un WhatsApp de 8 dígitos de Panamá o incluye el código de país.");
+  return digits;
+}
 export function number(value: unknown, label: string, max = 100000): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > max) throw new AppError(`${label}: número inválido.`);
   return value;
@@ -145,6 +154,6 @@ export function buildOrder(input: unknown, catalog: Catalog): Omit<Order,"id"|"d
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new AppError("Correo inválido.");
   const cash=payment==="Efectivo"?price(Number(c.cash),"Efectivo"):0;
   if (payment==="Efectivo" && cents(cash)<cents(totals.total)) throw new AppError("El efectivo debe cubrir el total.");
-  const customer: Customer={name:text(c.name,"Nombre",80,true),lastName:text(c.lastName,"Apellido",80),phone,email,building:text(c.building,"Casa o apartamento",150,fulfillment==="delivery"),floor:text(c.floor,"Piso",30),reference:text(c.reference,"Referencia",200),instructions:text(c.instructions,"Instrucciones",500),payment,cash};
+  const customer: Customer={name:text(c.name,"Nombre",80,true),lastName:text(c.lastName,"Apellido",80),phone,whatsappPhone:whatsappNumber(c.whatsappPhone,true),email,building:text(c.building,"Casa o apartamento",150,fulfillment==="delivery"),floor:text(c.floor,"Piso",30),reference:text(c.reference,"Referencia",200),instructions:text(c.instructions,"Instrucciones",500),payment,cash};
   return {items,customer,fulfillment,address:fulfillment==="delivery"?text(d.address,"Dirección",250,true):"Azumi · San Francisco, Calle 72",point:deliveryPoint,pointSystem:"wgs84",zone:zone?.name||null,minutes:zone?`${zone.minutesMin}–${zone.minutesMax} minutos`:"20–30 minutos",totals,status:"Recibido",whatsapp:false,paymentStatus:"Pendiente",coupon:code};
 }

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as store from "@/lib/azumi-store";
 import { AppError, object } from "@/lib/azumi-validation";
-import { customerOwner } from "@/lib/customer-store";
+import { customerSession } from "@/lib/customer-store";
 import { notifyOrder } from "@/lib/azumi-mail";
 import { after } from "next/server";
 import { sameOrigin } from "@/lib/request-origin";
+import { notifyPush } from "@/lib/push-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,7 +47,8 @@ function failure(error: unknown) {
 export async function GET(request: NextRequest) {
   try {
     const owner = visitor(request);
-    const result = response(await store.snapshot(await customerOwner(request.cookies.get("azumi_customer")?.value, owner), request.cookies.get("azumi_admin")?.value));
+    const customer = await customerSession(request.cookies.get("azumi_customer")?.value);
+    const result = response(await store.snapshot(customer?.owner, request.cookies.get("azumi_admin")?.value, true));
     result.cookies.set("azumi_visitor", owner, { ...cookieOptions, maxAge: 365 * 24 * 60 * 60 });
     return result;
   } catch (error) { return failure(error); }
@@ -67,8 +69,10 @@ export async function POST(request: NextRequest) {
       return result;
     }
     if (d.action === "order") {
-      const owner = visitor(request), order = await store.placeOrder(d, await customerOwner(request.cookies.get("azumi_customer")?.value, owner)), result = response({ order }, 201);
-      after(() => notifyOrder(order));
+      const customer = await customerSession(request.cookies.get("azumi_customer")?.value);
+      if (!customer) throw new AppError("Inicia sesión o crea una cuenta para realizar tu pedido.", 401);
+      const owner = visitor(request), order = await store.placeOrder(d, customer.owner), result = response({ order }, 201);
+      after(async () => { await Promise.allSettled([notifyOrder(order), notifyPush(order)]); });
       result.cookies.set("azumi_visitor", owner, { ...cookieOptions, maxAge: 365 * 24 * 60 * 60 });
       return result;
     }
@@ -83,7 +87,7 @@ export async function PATCH(request: NextRequest) {
     if (d.action === "catalog") return response(await store.patchCatalog(d));
     if (d.action === "status" || d.action === "payment") {
       const order = await store.updateStatus(d.action === "payment" ? { ...d, status: "payment" } : d, d.action === "payment");
-      after(() => notifyOrder(order));
+      after(async () => { await Promise.allSettled([notifyOrder(order), notifyPush(order)]); });
       return response({ order });
     }
     throw new AppError("Accion invalida.");

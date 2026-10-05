@@ -1,16 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type * as Leaflet from "leaflet";
 import type { Point, Zone } from "@/lib/azumi-types";
 import { latLng, restaurantPoint } from "@/lib/delivery-geo";
 import { Button, Icon, Notice } from "./ui";
 import { useAzumi } from "./azumi-provider";
+import type { LocationResult } from "@/lib/location-results";
 
-type Props = { zones: Zone[]; point?: Point | null; onPoint?: (point: Point) => void; selected?: string; onSelectZone?: (id: string) => void; vertices?: Point[]; onVertices?: (points: Point[]) => void; onAddress?: (address: string) => void };
-type SearchResult = { label: string; point: Point };
+export type DeliveryMapProps = { zones: Zone[]; point?: Point | null; onPoint?: (point: Point) => void; selected?: string; onSelectZone?: (id: string) => void; vertices?: Point[]; onVertices?: (points: Point[]) => void; onAddress?: (address: string) => void; onBuilding?: (building: string) => void };
 
-export function DeliveryMap(props: Props) {
+export function DeliveryMap(props: DeliveryMapProps) {
   const { catalog } = useAzumi();
   const restaurant = catalog.settings.restaurantPoint || restaurantPoint;
   const initialRestaurant = useRef(restaurant);
@@ -18,7 +18,38 @@ export function DeliveryMap(props: Props) {
   const instance = useRef<{ map: Leaflet.Map; layers: Leaflet.LayerGroup; L: typeof Leaflet } | null>(null);
   const current = useRef(props);
   const [loaded, setLoaded] = useState(false), [error, setError] = useState("");
-  const [query, setQuery] = useState(""), [results, setResults] = useState<SearchResult[]>([]), [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState(""), [results, setResults] = useState<LocationResult[]>([]), [busy, setBusy] = useState(false);
+  const [autocomplete, setAutocomplete] = useState(false), [searching, setSearching] = useState(false), [activeResult, setActiveResult] = useState(-1);
+  const requestRef = useRef<AbortController | null>(null), searchVersion = useRef(0), selectedQuery = useRef("");
+  const resultsId = useId(), searchable = !!props.onPoint;
+  const cancelSearch = useCallback(() => { requestRef.current?.abort(); searchVersion.current++; setSearching(false); }, []);
+  const search = useCallback(async (input: string, mode = "search") => {
+    if (input.trim().length < 3) return;
+    requestRef.current?.abort();
+    const controller = new AbortController(), version = ++searchVersion.current;
+    requestRef.current = controller; setSearching(true); setError(""); setResults([]); setActiveResult(-1);
+    try {
+      const response = await fetch(`/api/locations?q=${encodeURIComponent(input.trim())}&mode=${mode}`, { signal: controller.signal, cache: "no-store" });
+      const data = await response.json();
+      if (version !== searchVersion.current) return;
+      if (!response.ok) throw new Error(data.error);
+      setResults(data.results); setAutocomplete(data.provider === "geoapify");
+      if (!data.results.length) setError("No encontramos ese lugar. Prueba con el nombre del PH, la calle o selecciona un punto.");
+    } catch (e) { if (!controller.signal.aborted && version === searchVersion.current) setError(e instanceof Error ? e.message : "No pudimos buscar esa dirección."); }
+    finally { if (version === searchVersion.current) setSearching(false); }
+  }, []);
+  useEffect(() => {
+    if (!searchable) return;
+    const controller = new AbortController();
+    void fetch("/api/locations?mode=config", { signal: controller.signal, cache: "no-store" }).then(response => response.ok ? response.json() : null).then(data => { if (!controller.signal.aborted) setAutocomplete(!!data?.autocomplete); }).catch(() => {});
+    return () => controller.abort();
+  }, [searchable]);
+  useEffect(() => {
+    if (!searchable || !autocomplete || query.trim().length < 3 || selectedQuery.current === query) return;
+    const timer = setTimeout(() => { if (selectedQuery.current !== query) void search(query, "autocomplete"); }, 750);
+    return () => { clearTimeout(timer); cancelSearch(); };
+  }, [query, searchable, autocomplete, search, cancelSearch]);
+  useEffect(() => () => cancelSearch(), [cancelSearch]);
   useEffect(() => { current.current = props; });
   useEffect(() => {
     let disposed = false;
@@ -68,19 +99,14 @@ export function DeliveryMap(props: Props) {
     if (selected && !props.onPoint) map.fitBounds(L.latLngBounds(selected.points.map(latLng)), { padding: [25, 25], maxZoom: 15 });
   }, [loaded, props.zones, props.point, props.selected, props.vertices, props.onPoint, props.onSelectZone, props.onVertices, restaurant, catalog.settings.restaurantPoint]);
 
-  async function search() {
-    if (query.trim().length < 3 || busy) return;
-    setBusy(true); setError(""); setResults([]);
-    try {
-      const response = await fetch(`/api/locations?q=${encodeURIComponent(query.trim())}`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      setResults(data.results);
-      if (!data.results.length) setError("No encontramos ese lugar. Prueba con el nombre de la calle o selecciona un punto.");
-    } catch (e) { setError(e instanceof Error ? e.message : "No pudimos buscar esa dirección."); }
-    finally { setBusy(false); }
+  function selectResult(result: LocationResult) {
+    cancelSearch();
+    selectedQuery.current = result.label.slice(0, 150); setQuery(selectedQuery.current);
+    current.current.onPoint?.(result.point); current.current.onAddress?.(result.label); current.current.onBuilding?.(result.building || "");
+    instance.current?.map.setView(latLng(result.point), 16); setResults([]); setActiveResult(-1); setError("");
   }
   function locate() {
+    cancelSearch(); setResults([]); selectedQuery.current = query;
     if (!navigator.geolocation) { setError("Tu navegador no permite consultar la ubicación."); return; }
     setBusy(true); setError("");
     navigator.geolocation.getCurrentPosition(position => {
@@ -92,11 +118,18 @@ export function DeliveryMap(props: Props) {
   }
   return <div className="map-section">
     {props.onPoint && <div className="map-tools">
-      <label className="map-search"><span className="sr-only">Buscar calle o lugar en Panamá</span><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar calle o lugar en Panamá" maxLength={150} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); void search(); } }} /></label>
-      <Button className="secondary map-tool" title="Buscar dirección" aria-label="Buscar dirección" disabled={busy} onClick={() => void search()}><Icon name="search" /></Button>
+      <label className="map-search"><span className="sr-only">Buscar PH, calle o lugar en Panamá</span><input value={query} role="combobox" aria-autocomplete="list" aria-expanded={!!results.length} aria-controls={resultsId} aria-activedescendant={activeResult >= 0 ? `${resultsId}-${activeResult}` : undefined} autoComplete="off" onChange={e => { cancelSearch(); selectedQuery.current = ""; setResults([]); setActiveResult(-1); setError(""); setQuery(e.target.value); }} placeholder="Buscar PH, calle o lugar en Panamá" maxLength={150} onKeyDown={e => {
+        if (e.key === "ArrowDown" && results.length) { e.preventDefault(); setActiveResult(index => (index + 1) % results.length); }
+        else if (e.key === "ArrowUp" && results.length) { e.preventDefault(); setActiveResult(index => index <= 0 ? results.length - 1 : index - 1); }
+        else if (e.key === "Enter") { e.preventDefault(); if (activeResult >= 0 && results[activeResult]) selectResult(results[activeResult]); else { selectedQuery.current = query; void search(query); } }
+        else if (e.key === "Escape") { cancelSearch(); selectedQuery.current = query; setResults([]); setActiveResult(-1); }
+      }} /></label>
+      <Button className="secondary map-tool" title="Buscar dirección" aria-label="Buscar dirección" disabled={busy || searching || query.trim().length < 3} onClick={() => { selectedQuery.current = query; void search(query); }}><Icon name="search" /></Button>
       <Button className="secondary" disabled={busy || !loaded} onClick={locate}><Icon name="pin" />Mi ubicación</Button>
     </div>}
-    {!!results.length && <ul className="map-results">{results.map((result, index) => <li key={index}><button type="button" onClick={() => { const p = result.point; props.onPoint?.(p); props.onAddress?.(result.label.slice(0, 250)); instance.current?.map.setView(latLng(p), 16); setResults([]); }}>{result.label}</button></li>)}</ul>}
+    {searching && <p className="helper-text" role="status">Buscando direcciones…</p>}
+    {!!results.length && <ul id={resultsId} className="map-results" role="listbox" aria-label="Direcciones encontradas">{results.map((result, index) => <li key={result.id} id={`${resultsId}-${index}`} role="option" aria-selected={activeResult === index}><button type="button" onClick={() => selectResult(result)}>{result.label}</button></li>)}</ul>}
+    {props.onPoint && autocomplete && <p className="geocoder-credit"><a href="https://www.geoapify.com/" target="_blank" rel="noopener noreferrer">Powered by Geoapify</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap</a></p>}
     {error && <Notice error>{error}</Notice>}
     <div className="delivery-map"><div ref={container} className="leaflet-surface" aria-label="Mapa de cobertura de delivery" />{!loaded && <div className="map-loading" role="status">Cargando mapa…</div>}</div>
     {props.point && <p className="helper-text">Latitud {props.point[1].toFixed(6)} · Longitud {props.point[0].toFixed(6)}</p>}

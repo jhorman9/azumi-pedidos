@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { db, deleteDocument, readDocument, writeDocument } from "./azumi-store";
-import { AppError, object, point, text } from "./azumi-validation";
+import { AppError, object, point, text, whatsappNumber } from "./azumi-validation";
 import { mailConfigured, sendMail } from "./azumi-mail";
 import type { Customer } from "./azumi-types";
 import type { Address } from "./azumi-client";
@@ -68,7 +68,7 @@ export async function saveCustomer(input: unknown, token?: string) {
   const data = object(input), profile = object(data.profile);
   const phone = text(profile.phone, "Teléfono", 30).replace(/[^\d]/g, "");
   if (phone && (phone.length < 8 || phone.length > 15)) throw new AppError("Teléfono inválido.");
-  account.profile = { name: text(profile.name, "Nombre", 80, true), lastName: text(profile.lastName, "Apellido", 80), phone, email: account.email };
+  account.profile = { name: text(profile.name, "Nombre", 80, true), lastName: text(profile.lastName, "Apellido", 80), phone, whatsappPhone: whatsappNumber(profile.whatsappPhone), email: account.email };
   if (!Array.isArray(data.addresses) || data.addresses.length > 20) throw new AppError("Puedes guardar hasta 20 direcciones.");
   account.addresses = data.addresses.map(raw => { const address = object(raw); return { id: text(address.id, "Dirección", 80, true), label: text(address.label, "Nombre", 80, true), address: text(address.address, "Dirección", 250, true), point: point(address.point, false) }; });
   if (!(await writeDocument(accountKey(account.email), account, false, previous))) throw new AppError("Tu cuenta cambió en otra sesión. Recarga antes de guardar.", 409);

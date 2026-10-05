@@ -7,6 +7,7 @@ import seed from "./azumi-seed.json";
 import type { Catalog, Order, Status } from "./azumi-types";
 import { AppError, buildOrder, object, text, validateCatalog } from "./azumi-validation";
 import { geographicCatalog, geographicPoint } from "./delivery-geo";
+import { statusOptions } from "./order-status";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -159,10 +160,10 @@ export async function catalog(): Promise<{ revision: number; data: Catalog }> {
   return catalogFrom(await db());
 }
 
-export async function snapshot(owner?: string, token?: string) {
+export async function snapshot(owner?: string, token?: string, requireAccount = false) {
   const conn = await db();
   const authenticated = await isAdmin(token), current = await catalogFrom(conn);
-  const data = authenticated ? current.data : {
+  const data = requireAccount && !owner && !authenticated ? { ...current.data, products: [], categories: [], zones: [], promotions: [], coupons: [] } : authenticated ? current.data : {
     ...current.data,
     products: current.data.products.filter(p => p.active && current.data.categories.some(c => c.active && c.name === p.category)),
     categories: current.data.categories.filter(c => c.active),
@@ -173,6 +174,7 @@ export async function snapshot(owner?: string, token?: string) {
     orders: owner && /^[a-f0-9]{64}$/.test(owner) ? await orders(owner, false, conn) : [],
     adminOrders: authenticated ? await orders(owner || "", true, conn) : undefined,
     admin: authenticated,
+    customerAuthenticated: !!owner,
     development: process.env.NODE_ENV !== "production",
     serverTime: new Date().toISOString(),
   };
@@ -339,8 +341,7 @@ async function updateStatusInternal(input: unknown, payment = false): Promise<Or
       return { ...order, paymentStatus: d.paymentStatus, paymentHistory: [...(order.paymentHistory || []), { status: d.paymentStatus, note, date: new Date().toISOString() }] } as Order;
     }
     if (d.previousStatus !== order.status) throw new AppError("El pedido fue actualizado por otra sesion. Revisa su estado actual.", 409);
-    const transitions: Record<Status, Status[]> = { Recibido: ["Recibido", "Confirmado", "Cancelado"], Confirmado: ["Confirmado", ...(order.fulfillment === "delivery" ? ["En camino" as Status] : ["Entregado" as Status]), "Cancelado"], "En camino": ["En camino", "Entregado", "Cancelado"], Entregado: ["Entregado"], Cancelado: ["Cancelado"] };
-    if (!transitions[order.status].includes(status)) throw new AppError("Ese cambio de estado no esta permitido.", 409);
+    if (!statusOptions(order).includes(status)) throw new AppError("Ese cambio de estado no esta permitido.", 409);
     return { ...order, status };
   };
   if (conn.kind === "sqlite") {
